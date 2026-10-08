@@ -1,6 +1,13 @@
 from datetime import UTC, date, datetime
 
-from stock_candidate_report.providers.yahoo import parse_chart, parse_estimates, parse_financials
+import httpx
+
+from stock_candidate_report.providers.yahoo import (
+    YahooProvider,
+    parse_chart,
+    parse_estimates,
+    parse_financials,
+)
 
 NOW = datetime(2026, 10, 8, tzinfo=UTC)
 
@@ -63,3 +70,52 @@ def test_historical_financial_currency():
         ("revenue", 100_000_000, "reported"),
     ]
     assert batch.observations[0].period_end == date(2025, 12, 31)
+
+
+def test_configured_exchange_alias_preserves_original_symbol():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 500,
+                                "currency": "HKD",
+                                "exchangeTimezoneName": "Asia/Hong_Kong",
+                            },
+                            "timestamp": [],
+                            "indicators": {"quote": [{"close": []}]},
+                        }
+                    ]
+                }
+            },
+        )
+
+    provider = YahooProvider(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        symbol_metadata={"700": {"yahoo_symbol": "0700.HK"}},
+    )
+    batch = provider.fetch("700", 2026, NOW, ("prices",))
+    assert requests[0].url.path.endswith("/0700.HK")
+    assert batch.observations[0].symbol == "700"
+    assert batch.observations[0].currency == "HKD"
+
+
+def test_permission_denial_stops_further_requests():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(403)
+
+    provider = YahooProvider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    first = provider.fetch("AAA", 2026, NOW, ("prices",))
+    second = provider.fetch("BBB", 2026, NOW, ("prices",))
+    assert first.errors[0]["code"] == "permission"
+    assert second.errors[0]["code"] == "permission"
+    assert len(calls) == 1

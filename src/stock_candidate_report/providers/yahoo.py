@@ -1,5 +1,6 @@
 import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -87,7 +88,9 @@ def parse_chart(symbol: str, raw: dict, report_year: int, now: datetime) -> Prov
 def _parse_rows(symbol, payload, now, kind):
     batch = ProviderBatch(raw={kind: payload})
     currency = payload.get("financialCurrency", "")
-    unit = "common_share" if payload.get("quoteType") == "EQUITY" else "unknown_share_unit"
+    unit = payload.get("shareUnit") or (
+        "common_share" if payload.get("quoteType") == "EQUITY" else "unknown_share_unit"
+    )
     for row in payload.get("rows", []):
         period = normalize_period(row, {})
         if not period:
@@ -147,20 +150,24 @@ class YahooProvider:
     name = "yahoo"
     categories = ("prices", "financials", "estimates")
 
-    def __init__(self, ticker_factory=None, client=None):
+    def __init__(self, ticker_factory=None, client=None, symbol_metadata=None):
         self.ticker_factory = ticker_factory or yf.Ticker
         self.client = client or httpx.Client(
             timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}
         )
         self.blocked = False
+        self.blocked_code = "quota"
+        self.symbol_metadata = symbol_metadata or {}
 
     def fetch(self, symbol, report_year, now, categories=None):
         wanted = categories if categories is not None else self.categories
         batch = ProviderBatch()
         if self.blocked:
-            batch.errors.extend(error(symbol, "quota", c) for c in wanted)
+            batch.errors.extend(error(symbol, self.blocked_code, c) for c in wanted)
             return batch
-        ticker = self.ticker_factory(symbol)
+        symbol_info = self.symbol_metadata.get(symbol, {})
+        query_symbol = symbol_info.get("yahoo_symbol", symbol)
+        ticker = self.ticker_factory(query_symbol)
         info = {}
         # Each category is isolated so one unavailable endpoint cannot hide other data.
         for category in wanted:
@@ -169,7 +176,7 @@ class YahooProvider:
                     start = int(datetime(report_year - 1, 12, 15, tzinfo=UTC).timestamp())
                     stop = int((now + timedelta(days=1)).timestamp())
                     response = self.client.get(
-                        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                        f"https://query1.finance.yahoo.com/v8/finance/chart/{query_symbol}",
                         params={
                             "period1": start,
                             "period2": stop,
@@ -178,16 +185,29 @@ class YahooProvider:
                             "includeAdjustedClose": "false",
                         },
                     )
-                    if response.status_code == 429:
+                    if response.status_code in (401, 403, 429):
                         self.blocked = True
+                        self.blocked_code = "quota" if response.status_code == 429 else "permission"
                     response.raise_for_status()
                     part = parse_chart(symbol, response.json(), report_year, now)
+                    part.observations = [
+                        replace(
+                            o,
+                            meta={
+                                **o.meta,
+                                "query_symbol": query_symbol,
+                                "share_unit": symbol_info.get("share_unit", "common_share"),
+                            },
+                        )
+                        for o in part.observations
+                    ]
                 else:
                     if not info:
                         info = ticker.get_info()
                     base = {
                         "financialCurrency": info.get("financialCurrency", ""),
                         "quoteType": info.get("quoteType", ""),
+                        "shareUnit": symbol_info.get("share_unit", ""),
                         "rows": [],
                     }
                     # Yahoo's quote unit can be an ADR; do not infer conversion ratios.
@@ -219,7 +239,7 @@ class YahooProvider:
                             )
                         # Preserve explicit dates when the Yahoo quoteSummary endpoint is available.
                         trend = self.client.get(
-                            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}",
+                            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{query_symbol}",
                             params={"modules": "earningsTrend"},
                         )
                         if trend.status_code == 200:
@@ -248,16 +268,17 @@ class YahooProvider:
                 # Roundtrip removes numpy scalars/NaN before immutable raw storage.
                 batch.raw.update(json.loads(json.dumps(part.raw, default=str)))
             except Exception as exc:
-                is_quota = self.blocked or "RateLimit" in type(exc).__name__
+                is_quota = "RateLimit" in type(exc).__name__
                 if is_quota:
                     self.blocked = True
-                code = "quota" if is_quota else "network"
+                    self.blocked_code = "quota"
+                code = self.blocked_code if self.blocked else "network"
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
                     code = "symbol_not_found"
                 batch.errors.append(error(symbol, code, category))
                 logging.getLogger(__name__).debug("%s %s %s", symbol, category, code)
             if self.blocked:
                 for pending in wanted[wanted.index(category) + 1 :]:
-                    batch.errors.append(error(symbol, "quota", pending))
+                    batch.errors.append(error(symbol, self.blocked_code, pending))
                 break
         return batch
