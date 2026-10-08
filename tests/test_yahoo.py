@@ -45,8 +45,16 @@ def test_estimates_require_explicit_period_dates():
     payload = {
         "financialCurrency": "USD",
         "quoteType": "EQUITY",
+        "shareUnit": "common_share",
+        "estimate_currency": "USD",
         "rows": [
-            {"period": "0y", "endDate": "2026-06-30", "eps": 12, "revenue": 100},
+            {
+                "period": "0y",
+                "endDate": "2026-06-30",
+                "fiscalYear": 2026,
+                "eps": 12,
+                "revenue": 100,
+            },
             {"period": "+1y", "eps": 13, "revenue": 120},
         ],
     }
@@ -61,7 +69,16 @@ def test_historical_financial_currency():
         {
             "financialCurrency": "USD",
             "quoteType": "EQUITY",
-            "rows": [{"endDate": "2025-12-31", "eps": 2, "revenue": 100_000_000}],
+            "shareUnit": "common_share",
+            "rows": [
+                {
+                    "endDate": "2025-12-31",
+                    "fiscalYear": 2025,
+                    "eps": 2,
+                    "eps_basis": "GAAP",
+                    "revenue": 100_000_000,
+                }
+            ],
         },
         NOW,
     )

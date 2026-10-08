@@ -15,9 +15,34 @@ def error(symbol, code, category, source="yahoo"):
     return {"symbol": symbol, "source": source, "category": category, "code": code}
 
 
+def response_error(status: int, envelope) -> str | None:
+    if status in (401, 403):
+        return "permission"
+    if status == 429:
+        return "quota"
+    if status in (400, 404):
+        return "symbol_not_found"
+    if status >= 400:
+        return "network"
+    if envelope:
+        message = str(envelope).lower()
+        if "not found" in message or "no data found" in message:
+            return "symbol_not_found"
+        if "unauthorized" in message or "forbidden" in message or "crumb" in message:
+            return "permission"
+        if "limit" in message or "too many" in message:
+            return "quota"
+        return "provider_failure"
+    return None
+
+
 def parse_chart(symbol: str, raw: dict, report_year: int, now: datetime) -> ProviderBatch:
     batch = ProviderBatch(raw={"prices": raw})
     chart = raw.get("chart", {})
+    issue = response_error(200, chart.get("error"))
+    if issue:
+        batch.errors.append(error(symbol, issue, "prices"))
+        return batch
     results = chart.get("result") or []
     if not results:
         batch.errors.append(error(symbol, "no_coverage", "prices"))
@@ -88,26 +113,31 @@ def parse_chart(symbol: str, raw: dict, report_year: int, now: datetime) -> Prov
 def _parse_rows(symbol, payload, now, kind):
     batch = ProviderBatch(raw={kind: payload})
     currency = payload.get("financialCurrency", "")
-    unit = payload.get("shareUnit") or (
-        "common_share" if payload.get("quoteType") == "EQUITY" else "unknown_share_unit"
-    )
+    unit = payload.get("shareUnit") or "unknown_share_unit"
     for row in payload.get("rows", []):
-        period = normalize_period(row, {})
+        period = normalize_period(row, payload)
         if not period:
             batch.errors.append(error(symbol, "period_unmapped", "estimates"))
             continue
         for metric in ("eps", "revenue"):
+            metric_currency = row.get(f"{metric}_currency") or (
+                currency if kind == "actual" else payload.get("estimate_currency", "")
+            )
             value = finite_number(row.get(metric))
             basis = (
-                ("GAAP" if metric == "eps" else "reported")
-                if kind == "actual"
-                else (row.get("basis", "undisclosed") if metric == "eps" else "reported")
+                row.get("eps_basis", row.get("basis", "undisclosed"))
+                if metric == "eps"
+                else "reported"
             )
             status, reason = "ok", ""
             if value is None:
                 status, reason = "missing", "no_coverage"
-            if not currency or (metric == "eps" and unit == "unknown_share_unit"):
+            if not metric_currency or (
+                metric == "eps" and unit not in ("common_share", "adr_share")
+            ):
                 value, status, reason = None, "missing", "currency_or_share_unit_unknown"
+            elif period.period_type == "annual" and period.fiscal_year is None:
+                status, reason = "unmapped", "fiscal_year_unmapped"
             batch.observations.append(
                 Observation(
                     symbol,
@@ -115,7 +145,7 @@ def _parse_rows(symbol, payload, now, kind):
                     value,
                     "yahoo",
                     now,
-                    currency=currency,
+                    currency=metric_currency,
                     unit=unit if metric == "eps" else "currency",
                     period_type=period.period_type,
                     fiscal_year=period.fiscal_year,
@@ -128,6 +158,7 @@ def _parse_rows(symbol, payload, now, kind):
                         "category": "financials" if kind == "actual" else "estimates",
                         "period_evidence": period.evidence,
                         "analyst_count": row.get("analyst_count"),
+                        "period_start": row.get("period_start"),
                     },
                 )
             )
@@ -196,7 +227,7 @@ class YahooProvider:
                             meta={
                                 **o.meta,
                                 "query_symbol": query_symbol,
-                                "share_unit": symbol_info.get("share_unit", "common_share"),
+                                "share_unit": symbol_info.get("share_unit", "unknown_share_unit"),
                             },
                         )
                         for o in part.observations
@@ -208,6 +239,9 @@ class YahooProvider:
                         "financialCurrency": info.get("financialCurrency", ""),
                         "quoteType": info.get("quoteType", ""),
                         "shareUnit": symbol_info.get("share_unit", ""),
+                        "estimate_currency": symbol_info.get("currency", ""),
+                        "fiscal_year_convention": symbol_info.get("fiscal_year_convention"),
+                        "fiscal_year_labels": symbol_info.get("fiscal_year_labels", {}),
                         "rows": [],
                     }
                     # Yahoo's quote unit can be an ADR; do not infer conversion ratios.
@@ -242,15 +276,29 @@ class YahooProvider:
                             f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{query_symbol}",
                             params={"modules": "earningsTrend"},
                         )
-                        if trend.status_code == 200:
-                            data = trend.json().get("quoteSummary", {}).get("result") or []
+                        response_data = trend.json() if trend.status_code == 200 else {}
+                        envelope = response_data.get("quoteSummary", {}).get("error")
+                        issue = response_error(trend.status_code, envelope)
+                        if issue:
+                            batch.errors.append(error(symbol, issue, "estimates"))
+                            if issue in ("quota", "permission"):
+                                self.blocked, self.blocked_code = True, issue
+                        if trend.status_code == 200 and not issue:
+                            data = response_data.get("quoteSummary", {}).get("result") or []
                             if data:
                                 base["rows"] = [
                                     {
                                         "period": x.get("period"),
                                         "endDate": _unwrap(x.get("endDate")),
+                                        "fiscalYear": _unwrap(x.get("fiscalYear")),
                                         "eps": _unwrap(x.get("earningsEstimate", {}).get("avg")),
                                         "revenue": _unwrap(x.get("revenueEstimate", {}).get("avg")),
+                                        "eps_currency": x.get("earningsEstimate", {}).get(
+                                            "currency"
+                                        ),
+                                        "revenue_currency": x.get("revenueEstimate", {}).get(
+                                            "currency"
+                                        ),
                                         "analyst_count": _unwrap(
                                             x.get("earningsEstimate", {}).get("numberOfAnalysts")
                                         ),

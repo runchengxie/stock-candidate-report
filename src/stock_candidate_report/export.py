@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,6 +25,12 @@ REASONS = {
     "stale": "过期缓存",
     "unverified_basis": "EPS口径未披露",
     "provider_failure": "供应商调用失败",
+    "fiscal_year_unmapped": "财年标签未核验",
+    "no_coverage_or_period_unmapped": "数据缺失或财年未映射",
+    "price_or_year_end_missing": "价格或年末基准缺失",
+    "incomparable_annual_periods": "财年变更/年度期间不可比",
+    "annual_duration_unverified": "年度期间长度未核验",
+    "actual_estimate_eps_basis_unverified": "实际与预期EPS口径未核验",
 }
 
 
@@ -65,6 +72,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
         "财务币种",
         "来源",
         "拆股后年末涨幅基准",
+        "行情时间 UTC",
     ]
     rows = []
     for row in result.rows:
@@ -72,7 +80,8 @@ def sheet_payload(result: RunResult, year: int) -> dict:
         annual = [o for o in obs if o.period_type == "annual"]
         dates = sorted(
             {
-                f"FY{o.fiscal_year}:{o.period_end} {'实际' if o.kind == 'actual' else '预期'}"
+                f"FY{o.fiscal_year or '未映射'}:{o.period_end} "
+                f"{'实际' if o.kind == 'actual' else '预期'}"
                 for o in annual
             }
         )
@@ -104,6 +113,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                 ",".join(sorted({o.currency for o in annual})),
                 ",".join(sorted({o.source for o in obs})),
                 row.values.get("year_end_baseline"),
+                next((o.meta.get("price_time", "") for o in obs if o.metric == "price"), ""),
             ]
         )
     width = len(headers)
@@ -114,7 +124,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
     summary = [
         line(""),
         line(f"候选股增长和估值（{year}）"),
-        line("NTM PE：四个未来财季EPS合计的滚动近似；财年以结束年标识；SALES：百万原币"),
+        line("NTM PE：四个未来财季EPS合计的滚动近似；FY须经来源或配置核验；SALES：百万原币"),
         line(
             f"股票 {len(rows)}；价格可用 {result.coverage.get('prices_available', 0)}；"
             "空白表示缺失或不适用。逐项原因见数据明细。"
@@ -143,6 +153,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
         "来源网址",
         "数据ID",
         "原始响应ID",
+        "行情时间 UTC",
     ]
     details = []
     for o in result.observations:
@@ -165,6 +176,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                 source_url(o),
                 o.id,
                 o.meta.get("cache_response_id", ""),
+                o.meta.get("price_time", ""),
             ]
         )
     for row in result.rows:
@@ -188,6 +200,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                     "",
                     ",".join(metric.observation_ids),
                     "",
+                    "",
                 ]
             )
     dwidth = len(detail_headers)
@@ -207,6 +220,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                 "name": "增长和估值",
                 "rows": summary,
                 "formats": formats,
+                "date_columns": [22, 28],
                 "widths": {
                     0: 18,
                     1: 12,
@@ -218,12 +232,14 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                     25: 12,
                     26: 20,
                     27: 23,
+                    28: 29,
                 },
             },
             {
                 "name": "数据明细",
                 "rows": detail,
                 "formats": {2: "#,##0.00", 5: "0"},
+                "date_columns": [6, 10, 11, 17],
                 "widths": {
                     0: 12,
                     1: 27,
@@ -238,6 +254,7 @@ def sheet_payload(result: RunResult, year: int) -> dict:
                     14: 65,
                     15: 36,
                     16: 36,
+                    17: 29,
                 },
             },
         ]
@@ -252,6 +269,8 @@ def export_report(
     node_executable: str | None = None,
     preview: bool = False,
 ) -> tuple[Path, Path]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", result.run_id):
+        raise ValueError("Invalid run_id")
     output_dir.mkdir(parents=True, exist_ok=True)
     filename = f"候选股-{result.run_id}"
     xlsx, manifest = output_dir / f"{filename}.xlsx", output_dir / f"{filename}.json"
@@ -263,7 +282,10 @@ def export_report(
     payload = json.dumps(data, default=json_value, ensure_ascii=False, allow_nan=False, indent=2)
     temp_manifest = output_dir / f".{filename}-{uuid4().hex}.json.tmp"
     temp_manifest.write_text(payload, encoding="utf-8")
-    os.replace(temp_manifest, manifest)
+    try:
+        os.link(temp_manifest, manifest)
+    finally:
+        temp_manifest.unlink(missing_ok=True)
     dependencies = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node"
     modules = artifact_modules or Path(
         os.environ.get("STOCK_REPORT_ARTIFACT_MODULES", str(dependencies / "node_modules"))
@@ -274,8 +296,8 @@ def export_report(
             "Excel artifact runtime unavailable; set STOCK_REPORT_ARTIFACT_MODULES "
             "and STOCK_REPORT_NODE. JSON diagnostics were saved."
         )
-    runtime = output_dir / ".export-runtime"
-    runtime.mkdir(exist_ok=True)
+    runtime = output_dir / ".export-runtime" / uuid4().hex
+    runtime.mkdir(parents=True)
     link = runtime / "node_modules"
     if not link.exists():
         if os.name == "nt":
@@ -305,7 +327,8 @@ def export_report(
         log = output_dir / f"{filename}.export-error.txt"
         log.write_text(proc.stderr[-6000:], encoding="utf-8")
         raise RuntimeError(f"Excel artifact export failed; see {log}")
-    os.replace(temp_xlsx, xlsx)
+    os.link(temp_xlsx, xlsx)
+    temp_xlsx.unlink()
     # Verification/render files remain supporting artifacts, never final workbook variants.
     for sidecar in output_dir.glob(temp_xlsx.name + ".*"):
         sidecar.rename(output_dir / (filename + sidecar.name[len(temp_xlsx.name) :]))

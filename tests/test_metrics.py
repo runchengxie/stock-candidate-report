@@ -10,6 +10,8 @@ NOW = datetime(2026, 10, 8, tzinfo=UTC)
 
 
 def obs(metric, value, **kwargs):
+    if metric == "price":
+        kwargs.setdefault("meta", {"share_unit": "common_share"})
     return Observation(
         "AAA",
         metric,
@@ -23,11 +25,25 @@ def obs(metric, value, **kwargs):
 
 
 def test_growth_and_turnaround():
-    a = obs("revenue", 100, basis="reported", period_type="annual", fiscal_year=2025)
-    b = replace(a, value=125, fiscal_year=2026)
+    a = obs(
+        "revenue",
+        100,
+        basis="reported",
+        period_type="annual",
+        fiscal_year=2025,
+        period_end=date(2025, 12, 31),
+    )
+    b = replace(a, value=125, fiscal_year=2026, period_end=date(2026, 12, 31))
     assert growth(a, b).value == 0.25
-    a = obs("eps", -1, basis="GAAP", period_type="annual", fiscal_year=2025)
-    b = replace(a, value=2, fiscal_year=2026)
+    a = obs(
+        "eps",
+        -1,
+        basis="GAAP",
+        period_type="annual",
+        fiscal_year=2025,
+        period_end=date(2025, 12, 31),
+    )
+    b = replace(a, value=2, fiscal_year=2026, period_end=date(2026, 12, 31))
     assert growth(a, b).value is None
     assert growth(a, b).status == "turnaround"
     assert growth(replace(a, value=0), b).value is None

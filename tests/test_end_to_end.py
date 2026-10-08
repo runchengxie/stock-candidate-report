@@ -17,7 +17,15 @@ def test_synthetic_report_reconciles_independent_numbers(tmp_path):
 
         def fetch(self, symbol, report_year, now, categories=None):
             observations = [
-                Observation("AAA", "price", 100, self.name, now, currency="USD"),
+                Observation(
+                    "AAA",
+                    "price",
+                    100,
+                    self.name,
+                    now,
+                    currency="USD",
+                    meta={"share_unit": "common_share"},
+                ),
                 Observation("AAA", "year_end_baseline", 80, self.name, now, currency="USD"),
             ]
             for fy, value in [(2025, 100), (2026, 125)]:

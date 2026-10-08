@@ -10,6 +10,12 @@ def missing(reason: str) -> MetricResult:
 def growth(previous: Observation, current: Observation) -> MetricResult:
     if previous.value is None or current.value is None:
         return missing("no_coverage")
+    if (
+        current.metric == "eps"
+        and previous.kind != current.kind
+        and (previous.basis == "undisclosed" or current.basis == "undisclosed")
+    ):
+        return missing("actual_estimate_eps_basis_unverified")
     if (previous.currency, previous.unit, previous.basis, previous.source) != (
         current.currency,
         current.unit,
@@ -21,6 +27,14 @@ def growth(previous: Observation, current: Observation) -> MetricResult:
         return missing("not_annual")
     if previous.fiscal_year is None or current.fiscal_year != previous.fiscal_year + 1:
         return missing("nonconsecutive_fiscal_year")
+    if not previous.period_end or not current.period_end:
+        return missing("annual_duration_unverified")
+    if not 350 <= (current.period_end - previous.period_end).days <= 380:
+        return missing("incomparable_annual_periods")
+    for o in (previous, current):
+        start = o.meta.get("period_start")
+        if start and not 350 <= (o.period_end - date.fromisoformat(start)).days + 1 <= 380:
+            return missing("incomparable_annual_periods")
     if previous.value <= 0:
         return MetricResult(
             None,
@@ -69,7 +83,9 @@ def forward_four_quarter_pe(
         return missing("incompatible_currency_unit_basis_or_source")
     if qs[0].unit not in ("common_share", "adr_share"):
         return missing("share_unit_unknown")
-    price_unit = price.meta.get("share_unit", "common_share")
+    price_unit = price.meta.get("share_unit") or (
+        price.unit if price.unit in ("common_share", "adr_share") else "unknown_share_unit"
+    )
     if price_unit != qs[0].unit:
         return missing("share_unit_mismatch")
     total = sum(q.value for q in qs)
@@ -132,8 +148,19 @@ def calculate_row(
             a, b = get(metric, fy - 1), get(metric, fy)
             assign(f"{metric}_growth_{fy}", growth(a, b) if a and b else missing("no_coverage"))
     qs = [o for o in obs if o.metric == "eps" and o.period_type == "quarterly"]
-    assign(
-        "ntm_pe", forward_four_quarter_pe(price, qs, as_of) if price else missing("price_missing")
+    valuation = (
+        missing("price_missing") if not price else missing("four_future_quarters_unavailable")
     )
+    if price:
+        sources = sorted(
+            {q.source for q in qs}, key=lambda s: {"yahoo": 0, "alpha_vantage": 1}.get(s, 99)
+        )
+        for source in sources:
+            candidate = forward_four_quarter_pe(price, [q for q in qs if q.source == source], as_of)
+            if candidate.value is not None or candidate.status == "not_applicable":
+                valuation = candidate
+                break
+            valuation = candidate
+    assign("ntm_pe", valuation)
     values["currency"] = price.currency if price else ""
     return ReportRow(item, values, statuses)

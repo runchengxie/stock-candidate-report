@@ -1,6 +1,7 @@
 import json
 import math
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -63,10 +64,15 @@ class Cache:
                 "(provider TEXT, day TEXT, count INTEGER, PRIMARY KEY(provider,day))"
             )
 
+    @contextmanager
     def connect(self):
         c = sqlite3.connect(self.path, timeout=30)
-        c.execute("PRAGMA busy_timeout=30000")
-        return c
+        try:
+            c.execute("PRAGMA busy_timeout=30000")
+            with c:
+                yield c
+        finally:
+            c.close()
 
     def get(self, key: str, now: datetime, ttl: timedelta) -> CacheEntry | None:
         with self.connect() as c:
@@ -76,9 +82,12 @@ class Cache:
         if row is None:
             return None
         age = now - datetime.fromisoformat(row[0])
-        return CacheEntry(decode_batch(row[1]), timedelta(0) <= age < ttl, row[2])
+        batch = decode_batch(row[1])
+        ages = [now - o.fetched_at for o in batch.observations if o.value is not None]
+        fresh = timedelta(0) <= age < ttl and all(timedelta(0) <= a < ttl for a in ages)
+        return CacheEntry(batch, fresh, row[2])
 
-    def put(self, key: str, batch: ProviderBatch, fetched_at: datetime) -> None:
+    def archive(self, batch: ProviderBatch) -> str:
         response_id = uuid4().hex
         payload = json.dumps(
             clean_json(json_value(batch)), default=json_value, ensure_ascii=False, allow_nan=False
@@ -87,11 +96,23 @@ class Cache:
         raw_dir.mkdir(exist_ok=True)
         with (raw_dir / f"{response_id}.json").open("x", encoding="utf-8") as f:
             f.write(payload)
+        return response_id
+
+    def put(
+        self, key: str, batch: ProviderBatch, fetched_at: datetime, response_id: str | None = None
+    ) -> str:
+        response_id = response_id or self.archive(batch)
+        payload = json.dumps(
+            clean_json(json_value(batch)), default=json_value, ensure_ascii=False, allow_nan=False
+        )
         with self.connect() as c:
             c.execute(
-                "INSERT OR REPLACE INTO entries VALUES(?,?,?,?)",
+                "INSERT INTO entries VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                "fetched_at=excluded.fetched_at,payload=excluded.payload,"
+                "response_id=excluded.response_id WHERE excluded.fetched_at>=entries.fetched_at",
                 (key, fetched_at.isoformat(), payload, response_id),
             )
+        return response_id
 
     def reserve(self, provider: str, day: date, limit: int) -> bool:
         with self.connect() as c:

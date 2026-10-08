@@ -7,7 +7,7 @@ from .models import Observation, ProviderBatch
 
 @dataclass(frozen=True)
 class Period:
-    fiscal_year: int
+    fiscal_year: int | None
     end: date
     period_type: str
     evidence: str
@@ -32,15 +32,17 @@ def normalize_period(raw: dict, metadata: dict) -> Period | None:
             end = datetime.fromtimestamp(end, UTC).date()
         elif not isinstance(end, date):
             end = date.fromisoformat(str(end)[:10])
-        year = raw.get("fiscalYear")
-        label = "provider_label" if year else "fiscal_end_calendar_year"
+        year = raw.get("fiscalYear") or metadata.get("fiscal_year_labels", {}).get(end.isoformat())
+        label = "verified_fiscal_label" if year else "fiscal_year_unmapped"
+        if year is None and metadata.get("fiscal_year_convention") == "end_year":
+            year, label = end.year, "configured_end_year_convention"
         period_type = (
             "annual"
             if str(raw.get("period", "annual")).lower()
             in ("0y", "+1y", "annual", "yearly", "fiscal year")
             else "quarterly"
         )
-        return Period(int(year or end.year), end, period_type, label)
+        return Period(int(year) if year is not None else None, end, period_type, label)
     except (ValueError, TypeError, OSError):
         return None
 
@@ -51,6 +53,13 @@ def select_observations(batches: list[ProviderBatch]) -> list[Observation]:
     all_obs = [x for b in batches for x in b.observations]
     all_obs.sort(key=lambda x: (x.kind != "actual", x.value is None, priority.get(x.source, 99)))
     for obs in all_obs:
-        key = (obs.symbol, obs.metric, obs.period_type, obs.fiscal_year, obs.period_end)
+        key = (
+            obs.symbol,
+            obs.metric,
+            obs.period_type,
+            obs.fiscal_year,
+            obs.period_end,
+            obs.source if obs.period_type == "quarterly" else "",
+        )
         selected.setdefault(key, obs)
     return list(selected.values())

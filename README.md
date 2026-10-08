@@ -1,5 +1,7 @@
 # Stock candidate report
 
+[中文使用说明](README.zh-CN.md)
+
 Generate a new candidate-stock growth and valuation Excel from a maintained watchlist. The original workbook is never modified. Outputs are Python-calculated snapshots with a source sheet and a JSON run manifest.
 
 ## Install and run
@@ -49,6 +51,10 @@ daily_limit = 25
 # When independently verified, supply financial estimate currency and EPS share unit.
 currency = "USD"
 share_unit = "common_share"
+# Set only after confirming the issuer labels fiscal years by their end year.
+fiscal_year_convention = "end_year"
+# For 52/53-week calendars or nonstandard labels, use explicit verified date mappings:
+# fiscal_year_labels = { "2027-01-02" = 2026, "2027-12-31" = 2027 }
 
 [symbols."700"]
 yahoo_symbol = "0700.HK"
@@ -61,13 +67,13 @@ Alpha Vantage is optional. Set `ALPHAVANTAGE_API_KEY` or `ALPHA_VANTAGE_API_KEY`
 ## Data and accounting conventions
 
 - Yahoo regular-session price and market timestamp are separate from fetch time. Prior-year close is the last available trading date in that year. YTD uses split-adjusted, dividend-unadjusted Yahoo `Close`; the as-traded historical close is reconstructed from later split events and its baseline is separately displayed. Dividend total return is not calculated.
-- Fiscal years are labelled by the year of the explicit period end, except an explicit provider fiscal-year label takes precedence. This is not a natural/calendar-year comparison. The detail sheet preserves the period end and actual/estimate status. Fiscal transitions with conflicting annual periods are not silently combined.
-- Revenue is displayed in **millions of the original currency** in the summary and unscaled in detail. EPS remains per share in its original currency. ADR share units and currency conversions are not assumed.
+- Fiscal labels must come from the provider or independently verified per-symbol configuration (`fiscal_year_labels` or `fiscal_year_convention = "end_year"`). A date alone does **not** establish the issuer's FY label. Unmapped dates/values remain visible in detail and the raw archive, while FY summary columns remain blank. This is especially important for 52/53-week calendars. Fiscal transitions and annual end-date gaps outside 350–380 days are excluded from annual growth; known start dates also establish full-year duration.
+- Revenue is displayed in **millions of the original currency** in the summary and unscaled in detail. Forecast currency is taken from metric-level source fields or verified per-symbol configuration; company financial currency is not automatically used for analyst forecasts. EPS/share units must be verified through configuration or source metadata; `EQUITY` alone is not proof of common shares. ADR ratios and currency conversions are not assumed. Yahoo EPS accounting basis is unverified unless supplied explicitly.
 - Yahoo's public yfinance forecast tables retain `0y/+1y/0q/+1q` but discard end dates. If explicit dates cannot be obtained from Yahoo earningsTrend, those estimates are marked `period_unmapped`, not assigned from today's year. This can substantially reduce coverage even when Yahoo displays a forecast on its website.
 - Alpha Vantage annual/quarterly estimates use explicit dates. The response parser is validated against synthetic structured fixtures; account-specific response schema, permission and future-year coverage need verification with a real key. Unexpected formats are reported as `schema_unknown`. The demo key is not a substitute for a real account.
 - NTM PE here means price divided by the sum of the next four **not-yet-ended fiscal quarters**. It is a quarterly approximation, not precisely day-weighted twelve months. Missing/nonconsecutive quarters, currency/share-unit/basis conflicts, or nonpositive EPS produce a blank and a specific reason. Next-year EPS is never substituted. Undisclosed EPS basis is marked unverified.
-- Annual growth requires a positive base and consecutive fiscal years with compatible currency, units, basis and source. Negative EPS turning positive is marked `turnaround`, not a misleading growth percentage. GAAP actuals and adjusted/undisclosed estimates do not automatically form compatible EPS growth.
-- Refresh failures may fall back to expired cache while retaining the original fetch time and failure reason. Blank is missing/not applicable, never zero. Cache-only operation makes no provider requests.
+- Annual growth requires a positive base and consecutive full fiscal years with compatible currency, units, basis and source. Negative EPS turning positive is marked `turnaround`, not a misleading growth percentage. Actual versus forecast EPS with undisclosed basis is not compared; verified GAAP and adjusted EPS cannot be mixed.
+- Partial refreshes merge by observation identity and retain missing cached fields with original timestamps and response IDs. Freshness is evaluated per field; an incomplete refresh cannot renew old fields. Older concurrent writes cannot overwrite newer cache entries. Blank is missing/not applicable, never zero. Cache-only operation makes no provider requests. Aliases and normalization settings participate in cache identity.
 
 Sources: [yfinance earnings estimates](https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.get_earnings_estimate.html), [revenue estimates](https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.get_revenue_estimate.html), [Alpha Vantage estimates](https://www.alphavantage.co/documentation/#earnings-estimates).
 
@@ -85,6 +91,6 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-On hosts whose default Windows temp directory has restrictive ACLs, first create a dedicated parent under DATA_ROOT and use `--basetemp <new-child-directory>` for pytest. Tests use synthetic data, including the real export engine. Live checks are manual and must not call paid services without configured authorization.
+When workspace settings are available, the test harness places temporary artifacts in a unique child of DATA_ROOT/stock-candidate-report/test-tmp, avoiding host Windows temp ACL issues. An explicit `--basetemp` takes precedence. CI without personal settings uses pytest's normal temp directory. Tests use synthetic data, including the real export engine. Live checks are manual and must not call paid services without configured authorization.
 
 The first live check on 2026-10-08 found Yahoo returning HTTP 429/403 and no Alpha Vantage key configured. A diagnostics workbook can be produced, but that network check is not evidence of financial data coverage.

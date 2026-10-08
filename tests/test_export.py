@@ -1,12 +1,13 @@
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import openpyxl
 import pytest
 
 from stock_candidate_report.export import export_report
-from stock_candidate_report.models import ReportRow, RunResult, WatchItem
+from stock_candidate_report.models import Observation, ReportRow, RunResult, WatchItem
 
 
 def test_snapshot_typed_values_and_formula_safety(tmp_path):
@@ -52,3 +53,32 @@ def test_refuse_same_run_overwrite_and_atomic_failure(tmp_path):
         export_report(result, 2026, tmp_path, artifact_modules=Path("/missing-modules"))
     assert not (tmp_path / "候选股-will-fail.xlsx").exists()
     assert (tmp_path / "候选股-will-fail.json").exists()  # Diagnostic survives export failure.
+
+
+def test_reject_unsafe_run_id(tmp_path):
+    result = RunResult("../outside", [], [], [], {})
+    with pytest.raises(ValueError, match="run_id"):
+        export_report(result, 2026, tmp_path)
+
+
+def test_quote_timestamp_is_visible_and_dates_are_typed(tmp_path):
+    observation = Observation(
+        "AAA",
+        "price",
+        100,
+        "yahoo",
+        datetime(2026, 10, 8, tzinfo=UTC),
+        currency="USD",
+        meta={"price_time": "2026-10-07T20:00:00+00:00"},
+    )
+    result = RunResult(
+        "quote-time",
+        [ReportRow(WatchItem("AAA"), {"price": 100}, {})],
+        [observation],
+        [],
+        {"stocks": 1, "prices_available": 1},
+    )
+    output, _ = export_report(result, 2026, tmp_path)
+    book = openpyxl.load_workbook(output, data_only=True)
+    assert book["增长和估值"]["AC6"].value == datetime(2026, 10, 7, 20)
+    assert book["数据明细"]["R6"].value == datetime(2026, 10, 7, 20)
