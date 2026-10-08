@@ -103,7 +103,7 @@ providers/{base,yahoo,alpha_vantage}.py 负责供应商接口。tests/ 对应模
 - [x] uv run pytest tests/test_export.py tests/test_cli.py tests/test_end_to_end.py -q，确认失败。
 - [x] 根据表格技能支持的引擎实现导出，冻结表头、筛选、百分比格式和合理列宽；README 写完整安装、导入、生成、刷新、离线、配置密钥与缺失诊断命令；库依赖写入 uv.lock。
 - [x] uv sync --locked；uv run ruff check .；uv run pytest -q，全部通过。运行 --help 与实际命令检查用户入口。
-- [x] 导入真实候选表到个人配置目录，免费接口运行一次到数据目录；按成功/缺失/失败/缓存统计覆盖，选不同财年代表股票独立核对，检查 Excel 可读性；无 key 的接口明确跳过。
+- [ ] 导入和真实运行、覆盖统计、Excel 可读性检查已完成；Yahoo 拒绝访问且没有 Alpha Vantage 密钥，代表股票财务准确性核对仍待获得真实数据。
 - [x] 提交 feat: export candidate report and document reproducible workflow；对整个分支做独立审阅，修复实质问题并复验。依共享工作区流程验证远端归属，若有对应用户仓库走 PR；新项目无远端时保留已提交本地仓库并明确报告，不编造 PR。
 
 ## 自审与执行交接
@@ -111,4 +111,5 @@ providers/{base,yahoo,alpha_vantage}.py 负责供应商接口。tests/ 对应模
 设计的输入、口径、缓存、诊断、输出和真实运行分别由任务 1–6 覆盖；Review Focus 均有具体测试。新仓库目前未建立，计划与设计暂存在 DATA_ROOT 的 design 目录，执行后归档到 docs/superpowers/plans/2026-10-08-stock-candidate-report.md。
 
 推荐 Native：由主 agent 在本会话按顺序实现六个任务，完成后进行一次独立审阅。模块依赖紧密且必须先验证免费数据覆盖，逐任务完整分派增加协调成本。实施前请用户审阅计划并选择 Native 或 Subagent-driven。
+
 
