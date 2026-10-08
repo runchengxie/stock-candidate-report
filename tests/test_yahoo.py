@@ -13,7 +13,7 @@ def test_regular_price_and_split_adjusted_baseline():
                     "meta": {
                         "currency": "USD",
                         "regularMarketPrice": 60,
-                        "regularMarketTime": 1791417600,
+                        "regularMarketTime": 1791403200,
                         "exchangeTimezoneName": "America/New_York",
                     },
                     "timestamp": [1767196800, 1767283200],
