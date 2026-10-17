@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+*.egg-info/
+build/
+dist/
+.env
+*.sqlite*
+outputs/
+.env.*
+!.env.example
+watchlist.json
+settings.toml
+*.xlsx
