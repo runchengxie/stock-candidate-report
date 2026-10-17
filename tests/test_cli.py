@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from stock_candidate_report.cli import main
 
 
@@ -8,7 +10,10 @@ def test_cli_help(capsys):
     assert "generate" in capsys.readouterr().out
 
 
-def test_offline_all_missing_outputs_diagnostics_and_exit_2(tmp_path):
+@pytest.mark.parametrize("excel", [False, True])
+def test_offline_all_missing_outputs_diagnostics_and_exit_2(tmp_path, excel, capsys):
+    if excel:
+        pytest.importorskip("openpyxl")
     config = tmp_path / "workspace.toml"
     config.write_text(
         f'code_root="{tmp_path.as_posix()}"\n'
@@ -28,6 +33,7 @@ def test_offline_all_missing_outputs_diagnostics_and_exit_2(tmp_path):
             "2026",
             "--offline",
         ]
+        + (["--excel"] if excel else [])
     )
     assert rc == 2
     outputs = [
@@ -39,3 +45,6 @@ def test_offline_all_missing_outputs_diagnostics_and_exit_2(tmp_path):
     data = json.loads(outputs[0].read_text(encoding="utf-8"))
     assert data["coverage"]["prices_available"] == 0
     assert data["coverage"]["provider_calls"] == 0
+    assert bool(list(outputs[0].parent.glob("*.xlsx"))) is excel
+    status = json.loads(capsys.readouterr().out)
+    assert (status["excel"] is not None) is excel

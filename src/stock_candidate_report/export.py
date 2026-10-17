@@ -1,8 +1,7 @@
 import json
 import os
 import re
-import shutil
-import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -265,10 +264,9 @@ def export_report(
     result: RunResult,
     year: int,
     output_dir: Path,
-    artifact_modules: Path | None = None,
-    node_executable: str | None = None,
-    preview: bool = False,
-) -> tuple[Path, Path]:
+    *,
+    excel: bool = False,
+) -> tuple[Path | None, Path]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", result.run_id):
         raise ValueError("Invalid run_id")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -286,50 +284,60 @@ def export_report(
         os.link(temp_manifest, manifest)
     finally:
         temp_manifest.unlink(missing_ok=True)
-    dependencies = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node"
-    modules = artifact_modules or Path(
-        os.environ.get("STOCK_REPORT_ARTIFACT_MODULES", str(dependencies / "node_modules"))
-    )
-    node = node_executable or os.environ.get("STOCK_REPORT_NODE") or shutil.which("node")
-    if not (modules / "@oai/artifact-tool").is_dir() or not node:
+    if not excel:
+        return None, manifest
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
         raise RuntimeError(
-            "Excel artifact runtime unavailable; set STOCK_REPORT_ARTIFACT_MODULES "
-            "and STOCK_REPORT_NODE. JSON diagnostics were saved."
-        )
-    runtime = output_dir / ".export-runtime" / uuid4().hex
-    runtime.mkdir(parents=True)
-    link = runtime / "node_modules"
-    if not link.exists():
-        if os.name == "nt":
-            subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link.resolve()), str(modules.resolve())],
-                check=True,
-                capture_output=True,
+            "Excel export requires the optional dependency: uv sync --extra excel. "
+            "JSON diagnostics were saved."
+        ) from exc
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for spec in sheet_payload(result, year)["sheets"]:
+        sheet = workbook.create_sheet(spec["name"])
+        sheet.sheet_view.showGridLines = False
+        for row_number, values in enumerate(spec["rows"], start=1):
+            for column, value in enumerate(values):
+                if row_number > 5 and column in spec["date_columns"]:
+                    if isinstance(value, str) and re.match(r"^\d{4}-\d{2}-\d{2}", value):
+                        try:
+                            # XLSX dates have no timezone; normalize timestamps to UTC first.
+                            date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                            value = (
+                                date.astimezone(UTC).replace(tzinfo=None) if date.tzinfo else date
+                            )
+                        except ValueError:
+                            pass
+                cell = sheet.cell(row_number, column + 1, value)
+                if isinstance(value, str):
+                    cell.data_type = "s"  # Never interpret supplied text as an Excel formula.
+                cell.font = Font(name="Arial", size=10, color="172B4D")
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                if row_number == 5:
+                    cell.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+                    cell.fill = PatternFill("solid", fgColor="203864")
+                elif row_number > 5:
+                    cell.number_format = spec["formats"].get(column, "General")
+                    if column in spec["date_columns"]:
+                        cell.number_format = "yyyy-mm-dd hh:mm:ss"
+            sheet.row_dimensions[row_number].height = 40 if row_number == 5 else 30
+        for column in range(len(spec["rows"][0])):
+            sheet.column_dimensions[get_column_letter(column + 1)].width = spec["widths"].get(
+                column, 16
             )
-        else:
-            link.symlink_to(modules.resolve(), target_is_directory=True)
-    elif link.resolve() != modules.resolve():
-        raise RuntimeError("Excel artifact runtime points to a different module directory")
-    script = runtime / "export_workbook.mjs"
-    shutil.copyfile(Path(__file__).with_name("export_workbook.mjs"), script)
-    bridge = runtime / f"{result.run_id}.json"
-    bridge.write_text(json.dumps(sheet_payload(result, year), ensure_ascii=False), encoding="utf-8")
+        sheet.freeze_panes = "D6" if spec["name"] == "增长和估值" else "C6"
+        sheet.auto_filter.ref = f"A5:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+        sheet["A2"].font = Font(name="Arial", size=14, bold=True)
     temp_xlsx = output_dir / f".{filename}-{uuid4().hex}.xlsx"
-    proc = subprocess.run(
-        [node, str(script), str(bridge), str(temp_xlsx), "preview" if preview else "no-preview"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=180,
-    )
-    if proc.returncode:
-        log = output_dir / f"{filename}.export-error.txt"
-        log.write_text(proc.stderr[-6000:], encoding="utf-8")
-        raise RuntimeError(f"Excel artifact export failed; see {log}")
-    os.link(temp_xlsx, xlsx)
-    temp_xlsx.unlink()
-    # Verification/render files remain supporting artifacts, never final workbook variants.
-    for sidecar in output_dir.glob(temp_xlsx.name + ".*"):
-        sidecar.rename(output_dir / (filename + sidecar.name[len(temp_xlsx.name) :]))
+    try:
+        workbook.save(temp_xlsx)
+        os.link(temp_xlsx, xlsx)
+    finally:
+        workbook.close()
+        temp_xlsx.unlink(missing_ok=True)
     return xlsx, manifest

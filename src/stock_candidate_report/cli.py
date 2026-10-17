@@ -15,21 +15,21 @@ from .watchlist import import_watchlist, load_watchlist, save_watchlist
 
 
 def parser():
-    p = argparse.ArgumentParser(description="Generate traceable candidate-stock Excel snapshots")
+    p = argparse.ArgumentParser(description="Generate traceable candidate-stock JSON snapshots")
     sub = p.add_subparsers(dest="command", required=True)
     imp = sub.add_parser(
         "import-watchlist", help="Read symbols and groups from an existing Excel file"
     )
     imp.add_argument("input", type=Path)
     imp.add_argument("--output", type=Path)
-    gen = sub.add_parser("generate", help="Fetch data, calculate growth, export Excel and JSON")
+    gen = sub.add_parser(
+        "generate", help="Fetch data, calculate growth, export JSON (optionally Excel)"
+    )
     gen.add_argument("--watchlist", type=Path)
     gen.add_argument("--year", type=int, default=datetime.now(UTC).year)
     gen.add_argument("--refresh", action="store_true")
     gen.add_argument("--offline", action="store_true")
-    gen.add_argument(
-        "--preview", action="store_true", help="Render workbook ranges for visual review"
-    )
+    gen.add_argument("--excel", action="store_true", help="Also export XLSX (requires excel extra)")
     for sp in (imp, gen):
         sp.add_argument("--workspace-config", type=Path)
     return p
@@ -80,20 +80,19 @@ def main(argv=None):
             progress=lambda i, n, s: print(f"[{i}/{n}] {s}", file=sys.stderr),
         )
         folder = roots.project_data / "outputs" / result.run_id
-        runtime = settings.get("excel", {})
         xlsx, manifest = export_report(
             result,
             args.year,
             folder,
-            artifact_modules=Path(runtime["artifact_modules"])
-            if runtime.get("artifact_modules")
-            else None,
-            node_executable=runtime.get("node_executable"),
-            preview=args.preview,
+            excel=args.excel,
         )
         print(
             json.dumps(
-                {"excel": str(xlsx), "manifest": str(manifest), "coverage": result.coverage},
+                {
+                    "excel": str(xlsx) if xlsx else None,
+                    "manifest": str(manifest),
+                    "coverage": result.coverage,
+                },
                 ensure_ascii=False,
                 indent=2,
             )

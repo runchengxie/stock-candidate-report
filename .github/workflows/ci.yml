@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / excel=${{ matrix.excel }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12']
+        excel: [false, true]
+        include:
+          - os: ubuntu-latest
+            python: '3.14'
+            excel: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: '0.11.32'
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install JSON-only dependencies
+        if: ${{ !matrix.excel }}
+        run: uv sync --locked
+      - name: Install Excel dependencies
+        if: ${{ matrix.excel }}
+        run: uv sync --locked --extra excel
+      - name: Verify optional dependency isolation
+        if: ${{ !matrix.excel }}
+        run: uv run --no-sync python -c "import importlib.util; assert importlib.util.find_spec('openpyxl') is None"
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Test with network disabled
+        run: uv run --no-sync pytest -q
+      - name: Build wheel and source distribution
+        run: uv build --out-dir "${{ runner.temp }}/stock-report-dist"
+      - name: Smoke-test the installed JSON-only wheel
+        run: uv run --no-project --isolated --with "${{ runner.temp }}/stock-report-dist/stock_candidate_report-0.1.0-py3-none-any.whl" stock-report --help

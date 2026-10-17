@@ -9,3 +9,8 @@ dist/
 .env
 *.sqlite*
 outputs/
+.env.*
+!.env.example
+watchlist.json
+settings.toml
+*.xlsx

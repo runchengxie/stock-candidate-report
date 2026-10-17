@@ -1,12 +1,14 @@
 # Stock candidate report
 
+[![CI](https://github.com/runchengxie/stock-candidate-report/actions/workflows/ci.yml/badge.svg)](https://github.com/runchengxie/stock-candidate-report/actions/workflows/ci.yml)
+
 [中文使用说明](README.zh-CN.md)
 
-Generate a new candidate-stock growth and valuation Excel from a maintained watchlist. The original workbook is never modified. Outputs are Python-calculated snapshots with a source sheet and a JSON run manifest.
+Generate traceable candidate-stock growth and valuation JSON snapshots from a maintained watchlist. Excel is an optional additional output. The original input workbook is never modified. Every snapshot retains input observations, sources, timestamps, calculation dependencies and missing-data reasons.
 
 ## Install and run
 
-Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js and an available `@oai/artifact-tool` runtime. The installed Codex spreadsheet runtime is detected by default; on another machine, configure `STOCK_REPORT_ARTIFACT_MODULES` (the directory containing `@oai/artifact-tool`) and `STOCK_REPORT_NODE` (Node executable). This dependency is external and is **not installed by `uv sync`**. Openpyxl is used only to read and verify files, not to generate workbooks.
+Requirements: Python 3.12+ and [uv](https://docs.astral.sh/uv/). JSON output needs no Excel library, Node.js, Codex installation or private runtime.
 
 ```powershell
 uv sync --locked
@@ -14,7 +16,14 @@ uv run stock-report import-watchlist "C:/path/to/候选股.xlsx" --workspace-con
 uv run stock-report generate --year 2026 --workspace-config "C:/path/to/workspace.toml"
 uv run stock-report generate --year 2026 --refresh
 uv run stock-report generate --year 2026 --offline
-uv run stock-report generate --year 2026 --preview
+uv sync --extra excel
+uv run --extra excel stock-report generate --year 2026 --excel
+```
+
+You can also create `watchlist.json` directly in your private configuration directory, without an Excel input. This synthetic example shows the format (AAA is a placeholder, not a recommendation):
+
+```json
+[{"symbol": "AAA", "name": "Synthetic company", "group": "Example"}]
 ```
 
 After the first import, change `watchlist.json` to add/remove stocks or groups. Imports refuse to overwrite an existing watchlist; use `--output` to choose another filename. `generate --watchlist <file>` selects another JSON list. `--refresh` and `--offline` cannot be combined. Omit `--year` for the UTC runtime year; an explicit year only controls displayed columns and the year-end price baseline, **not** a historical point-in-time forecast reconstruction.
@@ -42,10 +51,6 @@ estimates = 604800
 [alpha_vantage]
 daily_limit = 25
 # api_key = "..."  # Prefer ALPHAVANTAGE_API_KEY in the environment.
-
-[excel]
-# artifact_modules = "C:/path/to/runtime/node_modules"
-# node_executable = "C:/path/to/node.exe"
 
 [symbols.AAA]
 # When independently verified, supply financial estimate currency and EPS share unit.
@@ -79,9 +84,11 @@ Sources: [yfinance earnings estimates](https://ranaroussi.github.io/yfinance/ref
 
 ## Results and diagnostics
 
-Each run creates one `候选股-<run_id>.xlsx` (summary and input detail) and one same-named `.json`. The JSON contains every chosen input, source identifier, calculation dependency and error. Rendering and verification files are supporting outputs only. The JSON is saved before Excel export; if the external Excel runtime is missing, diagnostics survive.
+Each run creates `候选股-<run_id>.json`. With `--excel`, it also creates a same-named `.xlsx` containing summary and input-detail sheets. The JSON contains every chosen input, source identifier, calculation dependency and error. JSON is saved first; if the optional Excel dependency is missing or export fails, JSON diagnostics survive. Install the extra with `uv sync --extra excel` (or `pip install ".[excel]"`). CLI output includes `manifest`, `coverage` and `excel` (null unless requested). Output files are create-only.
 
-Exit codes: `0` at least one stock has a price (other missing fields remain visible); `2` no prices are available, but the report and diagnostics are exported; `1` configuration/import/export error. A zero exit code does **not** mean all fields are filled. Inspect `coverage` and the detail sheet. Network denials or lack of forecast coverage are not reported as successful data acquisition.
+Migration from the original local implementation: `--preview`, `[excel]` runtime settings, `STOCK_REPORT_ARTIFACT_MODULES`, and `STOCK_REPORT_NODE` have been removed. Excel now uses openpyxl; there is no Node/artifact-tool bridge. JSON structure and financial calculations are unchanged.
+
+Exit codes: `0` at least one stock has a price (other missing fields remain visible); `2` no prices are available, but JSON diagnostics (and Excel if requested) are exported; `1` configuration/import/export error. A zero exit code does **not** mean all fields are filled. Inspect `coverage` and the detail sheet. Network denials or lack of forecast coverage are not reported as successful data acquisition.
 
 ## Development
 
@@ -89,8 +96,17 @@ Exit codes: `0` at least one stock has a price (other missing fields remain visi
 uv sync --locked
 uv run ruff check .
 uv run pytest -q
+uv sync --locked --extra excel
+uv run --extra excel pytest -q
+uv build
 ```
 
-When workspace settings are available, the test harness places temporary artifacts in a unique child of DATA_ROOT/stock-candidate-report/test-tmp, avoiding host Windows temp ACL issues. An explicit `--basetemp` takes precedence. CI without personal settings uses pytest's normal temp directory. Tests use synthetic data, including the real export engine. Live checks are manual and must not call paid services without configured authorization.
+When workspace settings are available, the test harness places temporary artifacts in a unique child of DATA_ROOT/stock-candidate-report/test-tmp, avoiding host Windows temp ACL issues. An explicit `--basetemp` takes precedence. CI without personal settings uses pytest's normal temp directory. Tests use synthetic data and disable network sockets through pytest-socket. Without the Excel extra, the two Excel integration modules and the Excel CLI case skip; all JSON, provider, cache and calculation tests run. With the extra installed, all tests run, including XLSX creation, typed-cell checks, formula safety, timestamp handling and end-to-end calculations. GitHub Actions covers JSON-only and Excel installs on Linux/Windows with Python 3.12, plus Excel on Python 3.14; it also runs Ruff and builds distributions. CI needs no credentials or live financial data. Live checks are manual and must not call paid services without configured authorization.
 
 The first live check on 2026-10-08 found Yahoo returning HTTP 429/403 and no Alpha Vantage key configured. A diagnostics workbook can be produced, but that network check is not evidence of financial data coverage.
+
+## License and data sources
+
+Original project code is MIT licensed; see [LICENSE](LICENSE). Dependencies retain their own licenses. This license grants no rights to Yahoo, Alpha Vantage or other providers’ data, branding or services. Review each provider’s terms and your account permissions before retrieving, using or redistributing data. No provider data, private watchlists, credentials or generated reports are included. This tool does not provide investment recommendations.
+
+The design and implementation records under `docs/superpowers/` describe the original local version; where they mention artifact-tool or mandatory Excel, the current README and CLI take precedence.

@@ -6,8 +6,17 @@ build-backend = "hatchling.build"
 name = "stock-candidate-report"
 version = "0.1.0"
 description = "Traceable candidate-stock growth and valuation snapshots"
+license = "MIT"
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["yfinance>=0.2.66,<2", "httpx>=0.28,<1", "openpyxl>=3.1,<4"]
+dependencies = ["yfinance>=0.2.66,<2", "httpx>=0.28,<1"]
+
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1,<4"]
+
+[project.urls]
+Repository = "https://github.com/runchengxie/stock-candidate-report"
+Issues = "https://github.com/runchengxie/stock-candidate-report/issues"
 
 [project.scripts]
 stock-report = "stock_candidate_report.cli:main"
@@ -16,7 +25,7 @@ stock-report = "stock_candidate_report.cli:main"
 packages = ["src/stock_candidate_report"]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.13,<1"]
+dev = ["pytest>=8,<10", "pytest-socket>=0.7,<1", "ruff>=0.13,<1"]
 
 [tool.ruff]
 line-length = 100
@@ -27,3 +36,4 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--disable-socket"

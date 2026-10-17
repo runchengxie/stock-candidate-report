@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime
 
-import openpyxl
+import pytest
 
 from stock_candidate_report.cache import Cache
 from stock_candidate_report.export import export_report
 from stock_candidate_report.models import Observation, ProviderBatch, WatchItem
 from stock_candidate_report.pipeline import run_report
+
+openpyxl = pytest.importorskip("openpyxl", reason="Install the excel extra for XLSX tests")
 
 
 def test_synthetic_report_reconciles_independent_numbers(tmp_path):
@@ -73,7 +75,7 @@ def test_synthetic_report_reconciles_independent_numbers(tmp_path):
     assert result.rows[0].values["ntm_pe"] == 10
     assert result.rows[0].values["ytd"] == 0.25
     assert result.rows[0].values["revenue_growth_2026"] == 0.25
-    output, _ = export_report(result, 2026, tmp_path)
+    output, _ = export_report(result, 2026, tmp_path, excel=True)
     book = openpyxl.load_workbook(output, data_only=True)
     assert book["增长和估值"]["G6"].value == 10
     assert book["增长和估值"]["P6"].value == 0.25
